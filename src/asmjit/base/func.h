@@ -421,6 +421,10 @@ struct FuncSignature {
     _args = args;
   }
 
+  ASMJIT_INLINE void setSafeStack(uint8_t enabled) noexcept {
+    _safeStack = enabled;
+  }
+
   ASMJIT_INLINE void reset() noexcept {
     memset(this, 0, sizeof(*this));
   }
@@ -460,6 +464,7 @@ struct FuncSignature {
   uint8_t _argCount;                     //!< Count of arguments.
   uint8_t _vaIndex;                      //!< Index to a first vararg or `kNoVarArgs`.
   uint8_t _ret;                          //!< TypeId of a return value.
+  uint8_t _safeStack : 1;
   const uint8_t* _args;                  //!< TypeIds of function arguments.
 };
 
@@ -841,6 +846,7 @@ public:
   uint32_t _argStackSize;                //!< Size of arguments passed by stack.
   Value _rets[2];                        //!< Function return values.
   Value _args[kFuncArgCountLoHi];        //!< Function arguments.
+  uint64_t _safeStack : 1;
 };
 
 // ============================================================================
@@ -1100,6 +1106,8 @@ struct FuncFrameLayout {
   ASMJIT_INLINE bool hasCalleeStackCleanup() const noexcept { return _calleeStackCleanup != 0; }
   ASMJIT_INLINE uint32_t getCalleeStackCleanup() const noexcept { return _calleeStackCleanup; }
 
+  ASMJIT_INLINE bool hasSafeStack() const noexcept { return _safeStack; }
+
   // --------------------------------------------------------------------------
   // [Members]
   // --------------------------------------------------------------------------
@@ -1109,6 +1117,7 @@ struct FuncFrameLayout {
   uint8_t _stackArgsRegId;               //!< GP register that holds address of the first argument passed by stack.
 
   uint32_t _savedRegs[kMaxVRegKinds];    //!< Registers that will be saved/restored in prolog/epilog.
+  uint32_t _safeStack : 1;
 
   uint32_t _preservedFP : 1;             //!< Function preserves frame-pointer.
   uint32_t _dsaSlotUsed : 1;             //!< True if `_dsaSlot` contains a valid memory slot/offset.

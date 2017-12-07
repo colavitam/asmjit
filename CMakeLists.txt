@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.1)
 
+set (CMAKE_CXX_COMPILER /usr/local/Cellar/llvm/5.0.0/bin/clang++)
+
 # Don't create a project if it was already created by another CMakeLists.txt.
 # This allows one library to embed another library without a project collision.
 if(NOT CMAKE_PROJECT_NAME OR "${CMAKE_PROJECT_NAME}" STREQUAL "asmjit")
@@ -57,6 +59,11 @@ if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
   if(NOT MSVC60 AND NOT MSVC70 AND NOT MSVC71)
     list(APPEND ASMJIT_PRIVATE_CFLAGS /MP)
   endif()
+endif()
+
+if("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
+  list(APPEND ASMJIT_CFLAGS -fsanitize=safe-stack)
+  list(APPEND CMAKE_SHARED_LINKER_FLAGS -fsanitize=safe-stack)
 endif()
 
 if("${CMAKE_CXX_COMPILER_ID}" MATCHES "^(GNU|Clang)$")

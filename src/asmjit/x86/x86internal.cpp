@@ -17,6 +17,8 @@
 // [Api-Begin]
 #include "../asmjit_apibegin.h"
 
+extern __thread void *__safestack_unsafe_stack_ptr;
+
 namespace asmjit {
 
 // ============================================================================
@@ -557,6 +559,7 @@ ASMJIT_FAVOR_SIZE Error X86Internal::initFuncDetail(FuncDetail& func, const Func
   }
 
   func._argStackSize = stackOffset - stackBase;
+  func._safeStack = sign._safeStack;
   return kErrorOk;
 }
 
@@ -694,6 +697,8 @@ ASMJIT_FAVOR_SIZE Error X86Internal::initFrameLayout(FuncFrameLayout& layout, co
   layout._avxEnabled = ffi.isAvxEnabled();
   layout._avxCleanup = ffi.hasAvxCleanup();
 
+
+  layout._safeStack = func._safeStack;
   return kErrorOk;
 }
 
@@ -1028,16 +1033,33 @@ ASMJIT_FAVOR_SIZE Error X86Internal::emitProlog(X86Emitter* emitter, const FuncF
 
   X86Gp zsp = emitter->zsp();   // ESP|RSP register.
   X86Gp zbp = emitter->zsp();   // EBP|RBP register.
+  X86Gp r10 = emitter->gpz(X86Gp::kIdR10);    // Scratch register r10
+  X86Gp r11 = emitter->gpz(X86Gp::kIdR11);    // Scratch register r11
   zbp.setId(X86Gp::kIdBp);
 
   X86Gp gpReg = emitter->zsp(); // General purpose register (temporary).
   X86Gp saReg = emitter->zsp(); // Stack-arguments base register.
+  if (layout.hasSafeStack()) {
+    ASMJIT_PROPAGATE(emitter->mov(r10, Imm((uint64_t) &__safestack_unsafe_stack_ptr)));
+    ASMJIT_PROPAGATE(emitter->mov(r11, x86::ptr(r10)));
+    // Move return address
+    ASMJIT_PROPAGATE(emitter->mov(r10, x86::ptr(zsp)));
+    ASMJIT_PROPAGATE(emitter->sub(r11, emitter->getGpSize()));
+    ASMJIT_PROPAGATE(emitter->mov(x86::ptr(r11), r10));
+    ASMJIT_PROPAGATE(emitter->mov(r10, Imm((uint64_t) &__safestack_unsafe_stack_ptr)));
+  }
 
   // Emit: 'push zbp'
   //       'mov  zbp, zsp'.
   if (layout.hasPreservedFP()) {
     gpSaved &= ~Utils::mask(X86Gp::kIdBp);
-    ASMJIT_PROPAGATE(emitter->push(zbp));
+    if (layout.hasSafeStack()) {
+      ASMJIT_PROPAGATE(emitter->sub(r11, emitter->getGpSize()));
+      ASMJIT_PROPAGATE(emitter->mov(x86::ptr(r11), zbp));
+    } else {
+      ASMJIT_PROPAGATE(emitter->push(zbp));
+    }
+    
     ASMJIT_PROPAGATE(emitter->mov(zbp, zsp));
   }
 
@@ -1046,8 +1068,17 @@ ASMJIT_FAVOR_SIZE Error X86Internal::emitProlog(X86Emitter* emitter, const FuncF
     for (uint32_t i = gpSaved, regId = 0; i; i >>= 1, regId++) {
       if (!(i & 0x1)) continue;
       gpReg.setId(regId);
-      ASMJIT_PROPAGATE(emitter->push(gpReg));
+      if (layout.hasSafeStack()) {
+        ASMJIT_PROPAGATE(emitter->sub(r11, emitter->getGpSize()));
+        ASMJIT_PROPAGATE(emitter->mov(x86::ptr(r11), gpReg));
+      } else {
+        ASMJIT_PROPAGATE(emitter->push(gpReg));
+      }
     }
+  }
+
+  if(layout.hasSafeStack()) {
+    ASMJIT_PROPAGATE(emitter->mov(x86::ptr(r10), r11));
   }
 
   // Emit: 'mov saReg, zsp'.
@@ -1075,7 +1106,14 @@ ASMJIT_FAVOR_SIZE Error X86Internal::emitProlog(X86Emitter* emitter, const FuncF
   // Emit 'movaps|movups [zsp + X], xmm0..15'.
   uint32_t xmmSaved = layout.getSavedRegs(X86Reg::kKindVec);
   if (xmmSaved) {
-    X86Mem vecBase = x86::ptr(zsp, layout.getVecStackOffset());
+    X86Mem vecBase;
+    if(layout.hasSafeStack()) {
+      ASMJIT_PROPAGATE(emitter->mov(r10, Imm((uint64_t) &__safestack_unsafe_stack_ptr)));
+      ASMJIT_PROPAGATE(emitter->mov(r11, x86::ptr(r10)));
+      vecBase = x86::ptr(r11, layout.getVecStackOffset());
+    } else {
+      vecBase = x86::ptr(zsp, layout.getVecStackOffset());
+    }
     X86Reg vecReg = x86::xmm(0);
 
     uint32_t vecInst = x86GetXmmMovInst(layout);
@@ -1086,6 +1124,10 @@ ASMJIT_FAVOR_SIZE Error X86Internal::emitProlog(X86Emitter* emitter, const FuncF
       vecReg.setId(regId);
       ASMJIT_PROPAGATE(emitter->emit(vecInst, vecBase, vecReg));
       vecBase.addOffsetLo32(static_cast<int32_t>(vecSize));
+    }
+
+    if(layout.hasSafeStack()) {
+      ASMJIT_PROPAGATE(emitter->mov(x86::ptr(r10), r11));
     }
   }
 
@@ -1101,6 +1143,8 @@ ASMJIT_FAVOR_SIZE Error X86Internal::emitEpilog(X86Emitter* emitter, const FuncF
 
   X86Gp zsp = emitter->zsp();   // ESP|RSP register.
   X86Gp zbp = emitter->zsp();   // EBP|RBP register.
+  X86Gp r10 = emitter->gpz(X86Gp::kIdR10);    // Scratch register r10
+  X86Gp r11 = emitter->gpz(X86Gp::kIdR11);    // Scratch register r11
   zbp.setId(X86Gp::kIdBp);
 
   X86Gp gpReg = emitter->zsp(); // General purpose register (temporary).
@@ -1111,7 +1155,16 @@ ASMJIT_FAVOR_SIZE Error X86Internal::emitEpilog(X86Emitter* emitter, const FuncF
   // Emit 'movaps|movups xmm0..15, [zsp + X]'.
   uint32_t xmmSaved = layout.getSavedRegs(X86Reg::kKindVec);
   if (xmmSaved) {
-    X86Mem vecBase = x86::ptr(zsp, layout.getVecStackOffset());
+    if (layout.hasSafeStack()) {
+      ASMJIT_PROPAGATE(emitter->mov(r10, Imm((uint64_t) &__safestack_unsafe_stack_ptr)));
+      ASMJIT_PROPAGATE(emitter->mov(r11, x86::ptr(r10)));
+    }
+    X86Mem vecBase;
+    if (layout.hasSafeStack()) {
+      vecBase = x86::ptr(r11, layout.getVecStackOffset());
+    } else {
+      vecBase = x86::ptr(zsp, layout.getVecStackOffset());
+    }
     X86Reg vecReg = x86::xmm(0);
 
     uint32_t vecInst = x86GetXmmMovInst(layout);
@@ -1123,6 +1176,10 @@ ASMJIT_FAVOR_SIZE Error X86Internal::emitEpilog(X86Emitter* emitter, const FuncF
       ASMJIT_PROPAGATE(emitter->emit(vecInst, vecReg, vecBase));
       vecBase.addOffsetLo32(static_cast<int32_t>(vecSize));
     }
+
+    if(layout.hasSafeStack()) {
+      ASMJIT_PROPAGATE(emitter->mov(x86::ptr(r10), r11));
+    }
   }
 
   // Emit 'emms' and 'vzeroupper'.
@@ -1131,11 +1188,7 @@ ASMJIT_FAVOR_SIZE Error X86Internal::emitEpilog(X86Emitter* emitter, const FuncF
 
   if (layout.hasPreservedFP()) {
     // Emit 'mov zsp, zbp' or 'lea zsp, [zbp - x]'
-    int32_t count = static_cast<int32_t>(layout.getGpStackSize() - gpSize);
-    if (!count)
-      ASMJIT_PROPAGATE(emitter->mov(zsp, zbp));
-    else
-      ASMJIT_PROPAGATE(emitter->lea(zsp, x86::ptr(zbp, -count)));
+    ASMJIT_PROPAGATE(emitter->mov(zsp, zbp));
   }
   else {
     if (layout.hasDynamicAlignment() && layout.hasDsaSlotUsed()) {
@@ -1150,6 +1203,11 @@ ASMJIT_FAVOR_SIZE Error X86Internal::emitEpilog(X86Emitter* emitter, const FuncF
   }
 
   // Emit 'pop gp' sequence.
+  if (layout.hasSafeStack()) {
+    ASMJIT_PROPAGATE(emitter->mov(r10, Imm((uint64_t) &__safestack_unsafe_stack_ptr)));
+    ASMJIT_PROPAGATE(emitter->mov(r11, x86::ptr(r10)));
+  }
+
   if (gpSaved) {
     i = gpSaved;
     regId = 16;
@@ -1158,14 +1216,37 @@ ASMJIT_FAVOR_SIZE Error X86Internal::emitEpilog(X86Emitter* emitter, const FuncF
       regId--;
       if (i & 0x8000) {
         gpReg.setId(regId);
-        ASMJIT_PROPAGATE(emitter->pop(gpReg));
+        if (layout.hasSafeStack()) {
+          ASMJIT_PROPAGATE(emitter->mov(gpReg, x86::ptr(r11)));
+          ASMJIT_PROPAGATE(emitter->add(r11, emitter->getGpSize()));
+        } else {
+          ASMJIT_PROPAGATE(emitter->pop(gpReg));
+        }
       }
       i <<= 1;
     } while (regId != 0);
+
+
   }
 
   // Emit 'pop zbp'.
-  if (layout.hasPreservedFP()) ASMJIT_PROPAGATE(emitter->pop(zbp));
+  if (layout.hasPreservedFP()) {
+    if (layout.hasSafeStack()) {
+      ASMJIT_PROPAGATE(emitter->mov(zbp, x86::ptr(r11)));
+      ASMJIT_PROPAGATE(emitter->add(r11, emitter->getGpSize()));
+    } else {
+      ASMJIT_PROPAGATE(emitter->pop(zbp));
+    }
+  }
+
+  if(layout.hasSafeStack()) {
+    // Restore return address
+    ASMJIT_PROPAGATE(emitter->mov(r10, x86::ptr(r11)));
+    ASMJIT_PROPAGATE(emitter->mov(x86::ptr(zsp), r10));
+    ASMJIT_PROPAGATE(emitter->add(r11, emitter->getGpSize()));
+    ASMJIT_PROPAGATE(emitter->mov(r10, Imm((uint64_t) &__safestack_unsafe_stack_ptr)));
+    ASMJIT_PROPAGATE(emitter->mov(x86::ptr(r10), r11));
+  }
 
   // Emit 'ret' or 'ret x'.
   if (layout.hasCalleeStackCleanup())
