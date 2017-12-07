@@ -63,6 +63,8 @@ endif()
 
 if("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
   list(APPEND ASMJIT_CFLAGS -fsanitize=safe-stack)
+  list(APPEND ASMJIT_PRIVATE_CFLAGS -fsanitize=safe-stack)
+  list(APPEND CMAKE_EXE_LINKER_FLAGS -fsanitize=safe-stack)
   list(APPEND CMAKE_SHARED_LINKER_FLAGS -fsanitize=safe-stack)
 endif()
 

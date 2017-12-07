@@ -835,6 +835,8 @@ public:
     _usedRegs[kind] |= regs;
   }
 
+  ASMJIT_INLINE uint8_t hasSafeStack() const noexcept { return _safeStack; }
+
   // --------------------------------------------------------------------------
   // [Members]
   // --------------------------------------------------------------------------
@@ -846,7 +848,7 @@ public:
   uint32_t _argStackSize;                //!< Size of arguments passed by stack.
   Value _rets[2];                        //!< Function return values.
   Value _args[kFuncArgCountLoHi];        //!< Function arguments.
-  uint64_t _safeStack : 1;
+  uint8_t _safeStack : 1;
 };
 
 // ============================================================================

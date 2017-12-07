@@ -22,6 +22,8 @@
 // [Api-Begin]
 #include "../asmjit_apibegin.h"
 
+extern __thread void *__safestack_unsafe_stack_ptr;
+
 namespace asmjit {
 
 // ============================================================================
@@ -2390,6 +2392,9 @@ protected:
 // ============================================================================
 
 Error X86VarAlloc::run(CBNode* node_) {
+  X86Gp zsp = _cc->zsp();
+  X86Gp r11 = _cc->gpz(X86Gp::kIdR11);    // Scratch register r11
+
   // Initialize.
   X86RAData* raData = node_->getPassData<X86RAData>();
   // Initialize the allocator; connect Vd->Va.
@@ -2428,6 +2433,8 @@ Error X86VarAlloc::run(CBNode* node_) {
       ASMJIT_PROPAGATE(X86RAPass_translateOperands(_context, node->getOpArray(), node->getOpCount()));
     }
     else if (node_->getType() == CBNode::kNodePushArg) {
+      bool swappedStacks = false;
+
       CCPushArg* node = static_cast<CCPushArg*>(node_);
 
       CCFuncCall* call = static_cast<CCFuncCall*>(node->getCall());
@@ -2457,6 +2464,12 @@ Error X86VarAlloc::run(CBNode* node_) {
 
       while (argMask != 0) {
         if (argMask & 0x1) {
+          if (!swappedStacks && fd.hasSafeStack()) {
+            // Swap to safe stack
+            ASMJIT_PROPAGATE(_cc->mov(r11, Imm((uint64_t) &__safestack_unsafe_stack_ptr)));
+            ASMJIT_PROPAGATE(_cc->xchg(zsp, x86::ptr(r11)));
+            swappedStacks = true;
+          }
           FuncDetail::Value& arg = fd.getArg(argIndex);
           ASMJIT_ASSERT(arg.byStack());
 
@@ -2466,6 +2479,11 @@ Error X86VarAlloc::run(CBNode* node_) {
 
         argIndex++;
         argMask >>= 1;
+      }
+
+      if (swappedStacks) {
+        ASMJIT_PROPAGATE(_cc->mov(r11, Imm((uint64_t) &__safestack_unsafe_stack_ptr)));
+        ASMJIT_PROPAGATE(_cc->xchg(zsp, x86::ptr(r11)));
       }
     }
 
@@ -3068,8 +3086,12 @@ protected:
 
 Error X86CallAlloc::run(CCFuncCall* node) {
   // Initialize the allocator; prepare basics and connect Vd->Va.
+  
+  X86Gp zsp = _cc->zsp();
+  X86Gp r11 = _cc->gpz(X86Gp::kIdR11);    // Scratch register r11
   X86RAData* raData = node->getPassData<X86RAData>();
   init(node, raData);
+
 
   // Plan register allocation. Planner is only able to assign one register per
   // variable. If any variable is used multiple times it will be handled later.
@@ -3100,6 +3122,13 @@ Error X86CallAlloc::run(CCFuncCall* node) {
   duplicate<X86Reg::kKindGp >();
   duplicate<X86Reg::kKindMm >();
   duplicate<X86Reg::kKindVec>();
+  
+  FuncDetail& fd = node->getDetail();
+
+  if (fd.hasSafeStack()) {
+    ASMJIT_PROPAGATE(_cc->mov(r11, Imm((uint64_t) &__safestack_unsafe_stack_ptr)));
+    ASMJIT_PROPAGATE(_cc->xchg(zsp, x86::ptr(r11)));
+  }
 
   // Translate call operand.
   ASMJIT_PROPAGATE(X86RAPass_translateOperands(_context, node->getOpArray(), node->getOpCount()));
@@ -3108,7 +3137,6 @@ Error X86CallAlloc::run(CCFuncCall* node) {
   _cc->_setCursor(node);
 
   // If the callee pops stack it has to be manually adjusted back.
-  FuncDetail& fd = node->getDetail();
   if (fd.hasFlag(CallConv::kFlagCalleePopsStack) && fd.getArgStackSize() != 0)
     _cc->emit(X86Inst::kIdSub, _context->_zsp, static_cast<int>(fd.getArgStackSize()));
 
@@ -3116,6 +3144,10 @@ Error X86CallAlloc::run(CCFuncCall* node) {
   clobber<X86Reg::kKindGp >();
   clobber<X86Reg::kKindMm >();
   clobber<X86Reg::kKindVec>();
+  if (fd.hasSafeStack()) {
+    ASMJIT_PROPAGATE(_cc->mov(r11, Imm((uint64_t) &__safestack_unsafe_stack_ptr)));
+    ASMJIT_PROPAGATE(_cc->xchg(zsp, x86::ptr(r11)));
+  }
 
   // Return.
   ret();
